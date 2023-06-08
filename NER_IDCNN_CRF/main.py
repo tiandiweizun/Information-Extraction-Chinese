@@ -18,6 +18,7 @@ from data_utils import load_word2vec, create_input, input_from_line, BatchManage
 flags = tf.app.flags
 flags.DEFINE_boolean("clean",       False,      "clean train folder")
 flags.DEFINE_boolean("train",       False,      "Whether train the model")
+flags.DEFINE_boolean("predict",       False,      "Whether train the model")
 # configurations for the model
 flags.DEFINE_integer("seg_dim",     20,         "Embedding size for segmentation, 0 if not used")
 flags.DEFINE_integer("char_dim",    100,        "Embedding size for characters")
@@ -104,15 +105,19 @@ def evaluate(sess, model, name, data, id_to_tag, logger):
         return f1 > best_test_f1
 
 
-def train():
+def train(predict=False):
     # load data sets
-    train_sentences = load_sentences(FLAGS.train_file, FLAGS.lower, FLAGS.zeros)
-    dev_sentences = load_sentences(FLAGS.dev_file, FLAGS.lower, FLAGS.zeros)
+    train_sentences = dev_sentences = test_sentences = []
+    train_data = dev_data = test_data = []
+    if not predict:
+        train_sentences = load_sentences(FLAGS.train_file, FLAGS.lower, FLAGS.zeros)
+        dev_sentences = load_sentences(FLAGS.dev_file, FLAGS.lower, FLAGS.zeros)
     test_sentences = load_sentences(FLAGS.test_file, FLAGS.lower, FLAGS.zeros)
 
     # Use selected tagging scheme (IOB / IOBES)
-    update_tag_scheme(train_sentences, FLAGS.tag_schema)
-    update_tag_scheme(test_sentences, FLAGS.tag_schema)
+    if not predict:
+        update_tag_scheme(train_sentences, FLAGS.tag_schema)
+        update_tag_scheme(test_sentences, FLAGS.tag_schema)
     update_tag_scheme(dev_sentences, FLAGS.tag_schema)
 
     # create maps if not exist
@@ -139,22 +144,26 @@ def train():
             char_to_id, id_to_char, tag_to_id, id_to_tag = pickle.load(f)
 
     # prepare data, get a collection of list containing index
-    train_data = prepare_dataset(
-        train_sentences, char_to_id, tag_to_id, FLAGS.lower
-    )
-    dev_data = prepare_dataset(
-        dev_sentences, char_to_id, tag_to_id, FLAGS.lower
-    )
+    if not predict:
+        train_data = prepare_dataset(
+            train_sentences, char_to_id, tag_to_id, FLAGS.lower
+        )
+        dev_data = prepare_dataset(
+            dev_sentences, char_to_id, tag_to_id, FLAGS.lower
+        )
     test_data = prepare_dataset(
         test_sentences, char_to_id, tag_to_id, FLAGS.lower
     )
     print("%i / %i / %i sentences in train / dev / test." % (
         len(train_data), len(dev_data), len(test_data)))
 
-    train_manager = BatchManager(train_data, FLAGS.batch_size)
-    dev_manager = BatchManager(dev_data, 100)
-    test_manager = BatchManager(test_data, 100)
+    if not predict:
+        train_manager = BatchManager(train_data, FLAGS.batch_size)
+        dev_manager = BatchManager(dev_data, 100)
+
+    test_manager = BatchManager(test_data, 100, False)
     # make path for store log and model if not exist
+
     make_path(FLAGS)
     if os.path.isfile(FLAGS.config_file):
         config = load_config(FLAGS.config_file)
@@ -170,27 +179,30 @@ def train():
     # limit GPU memory
     tf_config = tf.ConfigProto()
     tf_config.gpu_options.allow_growth = True
-    steps_per_epoch = train_manager.len_data
     with tf.Session(config=tf_config) as sess:
-        model = create_model(sess, Model, FLAGS.ckpt_path, load_word2vec, config, id_to_char, logger)
-        logger.info("start training")
-        loss = []
-        for i in range(100):
-            for batch in train_manager.iter_batch(shuffle=True):
-                step, batch_loss = model.run_step(sess, True, batch)
-                loss.append(batch_loss)
-                if step % FLAGS.steps_check == 0:
-                    iteration = step // steps_per_epoch + 1
-                    logger.info("iteration:{} step:{}/{}, "
-                                "NER loss:{:>9.6f}".format(
-                        iteration, step%steps_per_epoch, steps_per_epoch, np.mean(loss)))
-                    loss = []
+        if not predict:
+            steps_per_epoch = train_manager.len_data
+            model = create_model(sess, Model, FLAGS.ckpt_path, load_word2vec, config, id_to_char, logger)
+            logger.info("start training")
+            loss = []
+            for i in range(100):
+                for batch in train_manager.iter_batch(shuffle=True):
+                    step, batch_loss = model.run_step(sess, True, batch)
+                    loss.append(batch_loss)
+                    if step % FLAGS.steps_check == 0:
+                        iteration = step // steps_per_epoch + 1
+                        logger.info("iteration:{} step:{}/{}, "
+                                    "NER loss:{:>9.6f}".format(
+                            iteration, step%steps_per_epoch, steps_per_epoch, np.mean(loss)))
+                        loss = []
 
-            best = evaluate(sess, model, "dev", dev_manager, id_to_tag, logger)
-            if best:
-                save_model(sess, model, FLAGS.ckpt_path, logger)
+                best = evaluate(sess, model, "dev", dev_manager, id_to_tag, logger)
+                if best:
+                    save_model(sess, model, FLAGS.ckpt_path, logger)
+                evaluate(sess, model, "test", test_manager, id_to_tag, logger)
+        else:
+            model = create_model(sess, Model, FLAGS.ckpt_path, load_word2vec, config, id_to_char, logger, False)
             evaluate(sess, model, "test", test_manager, id_to_tag, logger)
-
 
 def evaluate_line():
     config = load_config(FLAGS.config_file)
@@ -216,11 +228,10 @@ def evaluate_line():
 
 
 def main(_):
-
-    if FLAGS.train:
+    if FLAGS.train or FLAGS.predict:
         if FLAGS.clean:
             clean(FLAGS)
-        train()
+        train(False if FLAGS.train else FLAGS.predict)
     else:
         evaluate_line()
 

@@ -281,13 +281,13 @@ def input_from_line(line, char_to_id):
 
 class BatchManager(object):
 
-    def __init__(self, data,  batch_size):
-        self.batch_data = self.sort_and_pad(data, batch_size)
+    def __init__(self, data, batch_size, sort=True):
+        self.batch_data = self.sort_and_pad(data, batch_size, sort)
         self.len_data = len(self.batch_data)
 
-    def sort_and_pad(self, data, batch_size):
-        num_batch = int(math.ceil(len(data) /batch_size))
-        sorted_data = sorted(data, key=lambda x: len(x[0]))
+    def sort_and_pad(self, data, batch_size, sort=True):
+        num_batch = int(math.ceil(len(data) / batch_size))
+        sorted_data = sorted(data, key=lambda x: len(x[0])) if sort else data
         batch_data = list()
         for i in range(num_batch):
             batch_data.append(self.pad_data(sorted_data[int(i*batch_size) : int((i+1)*batch_size)]))
